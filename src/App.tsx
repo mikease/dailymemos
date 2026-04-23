@@ -148,11 +148,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 
 function AppContent() {
   const [entries, setEntries] = useState<DayEntry[]>([]);
-  const isMounted = useRef(true);
-
-  useEffect(() => {
-    return () => { isMounted.current = false; };
-  }, []);
 
   // Global Error Listener for 'Uncaught' messages outside React
   useEffect(() => {
@@ -178,9 +173,6 @@ function AppContent() {
   const [isGridView, setIsGridView] = useState(false);
   const [pendingDate, setPendingDate] = useState<Date | null>(null);
   const skipSave = useRef(false);
-  const lastSavedRef = useRef<string>('');
-  const changeVersionRef = useRef(0);
-  const savedVersionRef = useRef(-1);
   const dateInputRef = useRef<HTMLInputElement>(null);
 
   const selectedEntry = entries.find(e => e.id === selectedDayId) || entries[0];
@@ -216,69 +208,30 @@ function AppContent() {
     loadData();
   }, []);
 
-  const savingInProgressRef = useRef(false);
-
   const saveData = async () => {
-    if (savingInProgressRef.current) return;
-    
-    const currentData = JSON.stringify(entries);
-    const currentVersion = changeVersionRef.current;
-    
-    // If no changes since last successful save, just ensure UI shows synced
-    if (currentData === lastSavedRef.current) {
-      savedVersionRef.current = currentVersion;
-      if (isMounted.current) setIsSaving(false);
-      return;
-    }
-    
-    savingInProgressRef.current = true;
     setIsSaving(true);
-    
     try {
-      const res = await fetch('/api/entries', {
+      await fetch('/api/entries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: currentData
+        body: JSON.stringify(entries)
       });
-      
-      if (res.ok) {
-        lastSavedRef.current = currentData;
-        savedVersionRef.current = currentVersion;
-      } else {
-        console.warn("Server side save failed, status:", res.status);
-      }
     } catch (err) {
-      console.error("Failed to save data due to network error", err);
+      console.error("Failed to save data", err);
     } finally {
-      savingInProgressRef.current = false;
-      // Always clear saving status after a cooldown to avoid stuck UI,
-      // but only if NO more changes have happened while we were waiting.
-      setTimeout(() => {
-        if (isMounted.current && !savingInProgressRef.current) {
-          // If we reached this point, we want to clear the 'Saving' state
-          // to give user feedback, even if there was a technical error, 
-          // because the app will try to sync again on next change anyway.
-          setIsSaving(false);
-        }
-      }, 1000);
+      setTimeout(() => setIsSaving(false), 500);
     }
   };
 
   // Save data automatically
   useEffect(() => {
     if (!isLoaded) return;
-    
     if (skipSave.current) {
       skipSave.current = false;
-      const json = JSON.stringify(entries);
-      lastSavedRef.current = json;
       return;
     }
 
-    // Increment version on every change
-    changeVersionRef.current += 1;
-
-    const timer = setTimeout(saveData, 1200); // 1.2s is more responsive
+    const timer = setTimeout(saveData, 800); 
     return () => clearTimeout(timer);
   }, [entries, isLoaded]);
 
