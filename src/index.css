@@ -1,0 +1,21 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-memos-bg: #F4F4F5;
+  --color-memos-sidebar: #FFFFFF;
+  --color-memos-card: #FFFFFF;
+  --color-memos-accent: #2563EB;
+  --color-memos-text-main: #18181B;
+  --color-memos-text-dim: #71717A;
+  --color-memos-border: #E4E4E7;
+}
+
+@layer base {
+  body {
+    @apply bg-memos-bg text-memos-text-main font-sans antialiased;
+  }
+}
