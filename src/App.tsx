@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import MarkdownIt from 'markdown-it';
 import { 
@@ -21,6 +21,10 @@ import {
   Menu,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  LayoutGrid,
+  List,
   Maximize2,
   Type
 } from 'lucide-react';
@@ -41,11 +45,11 @@ const STATUS_CONFIG = {
   neutral: {
     label: '平稳',
     icon: Hash,
-    color: 'text-slate-400',
-    bg: 'bg-slate-50',
-    indicator: 'bg-slate-400',
-    hex: '#94a3b8',
-    border: 'border-slate-100',
+    color: 'text-sky-500',
+    bg: 'bg-sky-50',
+    indicator: 'bg-sky-500',
+    hex: '#0ea5e9',
+    border: 'border-sky-100',
     desc: '节奏稳定，按部就班。'
   },
   productive: {
@@ -102,20 +106,82 @@ const generateMockData = (): DayEntry[] => {
   return data;
 };
 
-export default function App() {
+// Error Boundary Component
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-screen w-full flex items-center justify-center bg-gray-50 p-8 flex-col text-center">
+          <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mb-6">
+            <X className="w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">出错了</h1>
+          <p className="text-gray-500 mb-6 max-w-md">日笺在运行时遇到了一个意外错误。我们已经记录了此问题。</p>
+          <div className="bg-white border border-gray-200 rounded-xl p-4 mb-6 text-left w-full max-w-xl overflow-auto max-h-48 shadow-sm">
+            <code className="text-xs text-rose-500 font-mono whitespace-pre-wrap">{this.state.error?.toString()}</code>
+          </div>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-6 py-2 bg-memos-accent text-white font-bold rounded-xl shadow-lg shadow-memos-accent/20 hover:scale-105 transition-all"
+          >
+            刷新页面
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppContent() {
   const [entries, setEntries] = useState<DayEntry[]>([]);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    return () => { isMounted.current = false; };
+  }, []);
+
+  // Global Error Listener for 'Uncaught' messages outside React
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      console.error("Global captured error:", event.error);
+    };
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
   const [selectedDayId, setSelectedDayId] = useState<string>('');
   const [newTaskText, setNewTaskText] = useState('');
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [confirmDeleteDayId, setConfirmDeleteDayId] = useState<string | null>(null);
   const [confirmDeleteGoalId, setConfirmDeleteGoalId] = useState<string | null>(null);
+  const [expandedGoalIds, setExpandedGoalIds] = useState<Set<string>>(new Set());
+  const [isGridView, setIsGridView] = useState(false);
   const [pendingDate, setPendingDate] = useState<Date | null>(null);
   const skipSave = useRef(false);
+  const lastSavedRef = useRef<string>('');
+  const changeVersionRef = useRef(0);
+  const savedVersionRef = useRef(-1);
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   const selectedEntry = entries.find(e => e.id === selectedDayId) || entries[0];
 
@@ -150,32 +216,80 @@ export default function App() {
     loadData();
   }, []);
 
+  const savingInProgressRef = useRef(false);
+
   const saveData = async () => {
+    if (savingInProgressRef.current) return;
+    
+    const currentData = JSON.stringify(entries);
+    const currentVersion = changeVersionRef.current;
+    
+    // If no changes since last successful save, just ensure UI shows synced
+    if (currentData === lastSavedRef.current) {
+      savedVersionRef.current = currentVersion;
+      if (isMounted.current) setIsSaving(false);
+      return;
+    }
+    
+    savingInProgressRef.current = true;
     setIsSaving(true);
+    
     try {
-      await fetch('/api/entries', {
+      const res = await fetch('/api/entries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(entries)
+        body: currentData
       });
+      
+      if (res.ok) {
+        lastSavedRef.current = currentData;
+        savedVersionRef.current = currentVersion;
+      } else {
+        console.warn("Server side save failed, status:", res.status);
+      }
     } catch (err) {
-      console.error("Failed to save data", err);
+      console.error("Failed to save data due to network error", err);
     } finally {
-      setTimeout(() => setIsSaving(false), 500);
+      savingInProgressRef.current = false;
+      // Always clear saving status after a cooldown to avoid stuck UI,
+      // but only if NO more changes have happened while we were waiting.
+      setTimeout(() => {
+        if (isMounted.current && !savingInProgressRef.current) {
+          // If we reached this point, we want to clear the 'Saving' state
+          // to give user feedback, even if there was a technical error, 
+          // because the app will try to sync again on next change anyway.
+          setIsSaving(false);
+        }
+      }, 1000);
     }
   };
 
   // Save data automatically
   useEffect(() => {
     if (!isLoaded) return;
+    
     if (skipSave.current) {
       skipSave.current = false;
+      const json = JSON.stringify(entries);
+      lastSavedRef.current = json;
       return;
     }
 
-    const timer = setTimeout(saveData, 800); 
+    // Increment version on every change
+    changeVersionRef.current += 1;
+
+    const timer = setTimeout(saveData, 1200); // 1.2s is more responsive
     return () => clearTimeout(timer);
   }, [entries, isLoaded]);
+
+  const toggleGoalExpand = (goalId: string) => {
+    setExpandedGoalIds(prev => {
+      const next = new Set(prev);
+      if (next.has(goalId)) next.delete(goalId);
+      else next.add(goalId);
+      return next;
+    });
+  };
 
   const updateGoalProgress = (dayId: string, goalId: string, progress: number) => {
     setEntries(prev => prev.map(entry => {
@@ -216,7 +330,9 @@ export default function App() {
   const deleteGoal = (dayId: string, goalId: string) => {
     if (confirmDeleteGoalId !== goalId) {
       setConfirmDeleteGoalId(goalId);
-      setTimeout(() => setConfirmDeleteGoalId(null), 3000); // 3秒后重置状态
+      setTimeout(() => {
+        if (isMounted.current) setConfirmDeleteGoalId(null);
+      }, 3000); // 3秒后重置状态
       return;
     }
     
@@ -279,7 +395,8 @@ export default function App() {
       return;
     }
 
-    const items = e.clipboardData.items;
+    const items = e.clipboardData?.items;
+    if (!items) return;
 
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) {
@@ -300,11 +417,24 @@ export default function App() {
   }, [editingGoalId]);
 
   const addDay = (specificDate?: Date) => {
-    const date = specificDate || (() => {
-      const d = new Date(entries[0]?.date || new Date());
-      d.setDate(d.getDate() + 1);
-      return d;
-    })();
+    let date: Date;
+    
+    if (specificDate) {
+      date = specificDate;
+    } else {
+      // Safely base on previous entry or fall back to now
+      const baseDate = entries.length > 0 && entries[0].date instanceof Date && !isNaN(entries[0].date.getTime())
+        ? entries[0].date
+        : new Date();
+      
+      date = new Date(baseDate);
+      date.setDate(date.getDate() + 1);
+    }
+    
+    // Triple-check date validity to prevent RangeError in UI
+    if (isNaN(date.getTime())) {
+      date = new Date();
+    }
 
     // Check duplicate
     const exists = entries.find(e => 
@@ -335,16 +465,25 @@ export default function App() {
   const deleteDay = (dayId: string) => {
     if (confirmDeleteDayId !== dayId) {
       setConfirmDeleteDayId(dayId);
-      setTimeout(() => setConfirmDeleteDayId(null), 3000); // 3秒后重置状态
+      setTimeout(() => {
+        if (isMounted.current) setConfirmDeleteDayId(null);
+      }, 3000); // 3秒后重置状态
       return;
     }
 
     const newEntries = entries.filter(e => e.id !== dayId);
     setEntries(newEntries);
     setConfirmDeleteDayId(null);
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.delete(dayId);
+      return next;
+    });
     
     if (newEntries.length > 0) {
-      setSelectedDayId(newEntries[0].id);
+      if (selectedDayId === dayId) {
+        setSelectedDayId(newEntries[0].id);
+      }
     } else {
       // If no entries left, create a fresh one for today
       const today = new Date();
@@ -357,6 +496,41 @@ export default function App() {
       setEntries([freshEntry]);
       setSelectedDayId(freshEntry.id);
     }
+  };
+
+  const batchDelete = () => {
+    if (selectedIds.size === 0) return;
+    
+    const newEntries = entries.filter(e => !selectedIds.has(e.id));
+    
+    if (newEntries.length === 0) {
+      const today = new Date();
+      const freshEntry: DayEntry = {
+        id: `day-${Date.now()}`,
+        date: today,
+        status: 'neutral',
+        goals: []
+      };
+      setEntries([freshEntry]);
+      setSelectedDayId(freshEntry.id);
+    } else {
+      setEntries(newEntries);
+      if (selectedIds.has(selectedDayId)) {
+        setSelectedDayId(newEntries[0].id);
+      }
+    }
+    
+    setSelectedIds(new Set());
+    setIsBatchMode(false);
+  };
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const updateDayStatus = (dayId: string, status: DayEntry['status']) => {
@@ -407,6 +581,16 @@ export default function App() {
           </div>
           <div className={`flex items-center gap-1 ${isSidebarCollapsed ? 'flex-col' : ''}`}>
             <button 
+              onClick={() => {
+                setIsBatchMode(!isBatchMode);
+                setSelectedIds(new Set());
+              }}
+              className={`p-2 rounded-lg transition-all ${isBatchMode ? 'bg-memos-accent text-white shadow-sm' : 'text-gray-400 hover:bg-gray-100'}`}
+              title={isBatchMode ? "退出批量操作" : "批量操作"}
+            >
+              <Type className={`w-4 h-4 transition-transform ${isBatchMode ? 'rotate-12' : ''}`} />
+            </button>
+            <button 
               onClick={saveData}
               title="手动保存数据"
               disabled={isSaving}
@@ -444,25 +628,45 @@ export default function App() {
           )}
           {entries.map((entry) => {
             const isActive = selectedDayId === entry.id;
-            const completedCount = entry.goals.reduce((acc, g) => acc + (g.progress === 100 ? 1 : 0), 0);
-            const progress = entry.goals.length ? (completedCount / entry.goals.length) * 100 : 0;
+            const isSelected = selectedIds.has(entry.id);
+            const entryGoals = entry.goals || [];
+            const completedCount = entryGoals.reduce((acc, g) => acc + (g.progress === 100 ? 1 : 0), 0);
+            const progress = entryGoals.length ? (completedCount / entryGoals.length) * 100 : 0;
+            
+            // Safety check for date
+            if (!(entry.date instanceof Date) || isNaN(entry.date.getTime())) {
+              return null;
+            }
             
             return (
               <button
                 key={entry.id}
                 onClick={() => {
-                  setSelectedDayId(entry.id);
-                  if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                  if (isBatchMode) {
+                    toggleSelection(entry.id);
+                  } else {
+                    setSelectedDayId(entry.id);
+                    if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                  }
                 }}
                 className={`w-full text-left rounded-xl transition-all group relative flex flex-col ${
                   isSidebarCollapsed ? 'items-center' : 'items-start'
                 } ${
-                  isActive 
+                  isActive && !isBatchMode
                     ? 'bg-white shadow-sm ring-1 ring-memos-border' 
-                    : 'hover:bg-gray-100 text-memos-text-main'
+                    : isSelected
+                      ? 'bg-memos-accent/10 ring-1 ring-memos-accent/30'
+                      : 'hover:bg-gray-100 text-memos-text-main'
                 } ${isSidebarCollapsed ? 'p-3' : 'p-4 gap-1'}`}
               >
                 <div className={`flex items-start w-full gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
+                  {/* Selection Checkbox */}
+                  {isBatchMode && !isSidebarCollapsed && (
+                    <div className={`w-4 h-4 rounded border transition-all mt-1.5 shrink-0 flex items-center justify-center ${isSelected ? 'bg-memos-accent border-memos-accent' : 'bg-white border-gray-300'}`}>
+                      {isSelected && <CheckCircle2 className="w-3 h-3 text-white" />}
+                    </div>
+                  )}
+
                   {/* Left: Date Block */}
                   {!isSidebarCollapsed && (
                     <div className="flex flex-col shrink-0 min-w-[56px]">
@@ -510,51 +714,83 @@ export default function App() {
         </div>
 
         <div className="p-4 border-t border-memos-border bg-white flex flex-col gap-3">
-          <div className="flex gap-2">
-            <button 
-              onClick={() => {
-                addDay();
-                if (window.innerWidth < 1024) setIsSidebarOpen(false);
-              }}
-              className={`flex items-center justify-center gap-2 py-2.5 bg-memos-accent text-white text-sm font-bold rounded-xl shadow-sm shadow-memos-accent/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex-1 ${isSidebarCollapsed ? 'hidden' : ''}`}
-              title="记录后一天"
-            >
-              <Plus className="w-4 h-4" />
-              {!isSidebarCollapsed && "记录新的一天"}
-            </button>
-            
-            <div className={`relative ${isSidebarCollapsed ? 'mx-auto' : ''}`}>
-              <input 
-                type="date"
-                onChange={(e) => {
-                  if (e.target.value) {
-                    const pickedDate = new Date(e.target.value);
-                    // Check if exists first
-                    const exists = entries.find(e => 
-                      e.date.getFullYear() === pickedDate.getFullYear() && 
-                      e.date.getMonth() === pickedDate.getMonth() && 
-                      e.date.getDate() === pickedDate.getDate()
-                    );
-                    
-                    if (exists) {
-                      setSelectedDayId(exists.id);
-                      if (window.innerWidth < 1024) setIsSidebarOpen(false);
-                    } else {
-                      setPendingDate(pickedDate);
-                    }
-                    e.target.value = '';
-                  }
-                }}
-                className={`absolute inset-0 opacity-0 cursor-pointer w-10 h-10 outline-none`}
-              />
+          {isBatchMode ? (
+            <div className={`flex flex-col gap-2 ${isSidebarCollapsed ? 'hidden' : ''}`}>
+              <div className="flex items-center justify-between px-2 mb-1">
+                <span className="text-[10px] font-bold text-memos-text-dim uppercase">已选 {selectedIds.size} 项</span>
+                <button 
+                  onClick={() => {
+                    if (selectedIds.size === entries.length) setSelectedIds(new Set());
+                    else setSelectedIds(new Set(entries.map(e => e.id)));
+                  }}
+                  className="text-[10px] font-bold text-memos-accent hover:underline"
+                >
+                  {selectedIds.size === entries.length ? "取消全选" : "全选"}
+                </button>
+              </div>
               <button 
-                className={`flex items-center justify-center w-10 h-10 bg-gray-100 text-gray-500 rounded-xl hover:bg-gray-200 transition-all`}
-                title="创建指定日期"
+                onClick={batchDelete}
+                disabled={selectedIds.size === 0}
+                className="flex items-center justify-center gap-2 py-2.5 bg-rose-500 text-white text-sm font-bold rounded-xl shadow-sm shadow-rose-500/20 hover:bg-rose-600 disabled:opacity-50 disabled:grayscale transition-all"
               >
-                <CalendarIcon className="w-4 h-4" />
+                <Trash2 className="w-4 h-4" />
+                删除选中项
+              </button>
+              <button 
+                onClick={() => setIsBatchMode(false)}
+                className="py-2 text-[11px] font-bold text-gray-400 hover:text-gray-600 transition-all text-center"
+              >
+                退出批量模式
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="flex gap-2">
+              <button 
+                onClick={() => {
+                  addDay();
+                  if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                }}
+                className={`flex items-center justify-center gap-2 py-2.5 bg-memos-accent text-white text-sm font-bold rounded-xl shadow-sm shadow-memos-accent/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex-1 ${isSidebarCollapsed ? 'hidden' : ''}`}
+                title="记录后一天"
+              >
+                <Plus className="w-4 h-4" />
+                {!isSidebarCollapsed && "记录新的一天"}
+              </button>
+              
+              <div className={`relative ${isSidebarCollapsed ? 'mx-auto' : ''}`}>
+                <input 
+                  ref={dateInputRef}
+                  type="date"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      const pickedDate = new Date(e.target.value);
+                      // Check if exists first
+                      const exists = entries.find(e => 
+                        e.date.getFullYear() === pickedDate.getFullYear() && 
+                        e.date.getMonth() === pickedDate.getMonth() && 
+                        e.date.getDate() === pickedDate.getDate()
+                      );
+                      
+                      if (exists) {
+                        setSelectedDayId(exists.id);
+                        if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                      } else {
+                        setPendingDate(pickedDate);
+                      }
+                      e.target.value = '';
+                    }
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer z-10 w-10 h-10"
+                  title="选择日期"
+                />
+                <button 
+                  className="flex items-center justify-center w-10 h-10 bg-gray-100 text-gray-500 rounded-xl hover:bg-gray-200 transition-all active:scale-95"
+                >
+                  <CalendarIcon className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
           
           {!isSidebarCollapsed && (
             <div className="flex items-center justify-between px-2 text-[9px] font-bold text-gray-300 uppercase tracking-widest">
@@ -580,7 +816,11 @@ export default function App() {
             </button>
             <CalendarIcon className="w-4 h-4 text-memos-text-dim shrink-0 hidden sm:block" />
             <div className="flex items-center gap-1.5 lg:gap-2 overflow-hidden">
-              <span className="shrink-0 text-xs sm:text-sm">{selectedEntry.date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' })}</span>
+              <span className="shrink-0 text-xs sm:text-sm">
+                {selectedEntry.date instanceof Date && !isNaN(selectedEntry.date.getTime())
+                  ? selectedEntry.date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' })
+                  : '无效日期'}
+              </span>
               <div className="h-4 w-px bg-memos-border mx-0.5 shrink-0" />
               <input 
                 type="text"
@@ -632,8 +872,27 @@ export default function App() {
             <div className="flex flex-col items-end">
               <span className="text-[8px] lg:text-[10px] font-bold text-memos-text-dim uppercase">Progress</span>
               <span className="text-sm lg:text-lg font-bold tabular-nums">
-                {Math.round(selectedEntry.goals.reduce((acc, g) => acc + g.progress, 0) / (selectedEntry.goals.length || 1))}%
+                {selectedEntry.goals?.length 
+                  ? Math.round(selectedEntry.goals.reduce((acc, g) => acc + (g.progress || 0), 0) / selectedEntry.goals.length)
+                  : 0}%
               </span>
+            </div>
+            <div className="h-6 lg:h-8 w-px bg-memos-border mx-2" />
+            <div className="flex bg-gray-100 p-1 rounded-xl">
+              <button
+                onClick={() => setIsGridView(false)}
+                className={`p-1.5 rounded-lg transition-all ${!isGridView ? 'bg-white shadow-sm text-memos-accent' : 'text-gray-400 hover:text-gray-600'}`}
+                title="列表视图"
+              >
+                <List className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setIsGridView(true)}
+                className={`p-1.5 rounded-lg transition-all ${isGridView ? 'bg-white shadow-sm text-memos-accent' : 'text-gray-400 hover:text-gray-600'}`}
+                title="网格视图"
+              >
+                <LayoutGrid className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </header>
@@ -706,18 +965,21 @@ export default function App() {
               </div>
             )}
 
-            <div className="grid gap-4">
+            <div className={`grid gap-4 ${isGridView ? 'sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-2' : ''} ${isGridView ? 'max-w-none' : 'max-w-3xl mx-auto'}`}>
               <AnimatePresence mode="popLayout">
                 {selectedEntry.goals.map((goal) => (
                   <motion.div
                     key={goal.id}
-                    layout
+                    layout={!zoomedImage} // Disable layout animation when zooming images to avoid jitter
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="bg-white border border-memos-border rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all group/card relative"
+                    transition={{ duration: 0.3 }}
+                    className={`bg-white border border-memos-border rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all group/card relative flex flex-col ${
+                      isGridView && editingGoalId !== goal.id && !expandedGoalIds.has(goal.id) ? 'h-[400px]' : ''
+                    }`}
                   >
                     {/* Minimal Progress Line at the very top */}
-                    <div className="absolute top-0 left-0 right-0 h-1 bg-gray-50 overflow-hidden">
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-gray-50 overflow-hidden z-20">
                       <motion.div 
                         initial={false}
                         animate={{ width: `${goal.progress}%` }}
@@ -725,126 +987,159 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="p-4 lg:p-8" onPaste={(e) => handlePaste(e, selectedEntry.id, goal.id)}>
+                    <div className={`flex-1 flex flex-col ${isGridView ? 'p-3 lg:p-5' : 'p-4 lg:p-8'}`} onPaste={(e) => handlePaste(e, selectedEntry.id, goal.id)}>
                       {/* Header Area - Subtle */}
-                      <div className="flex items-start justify-between mb-6 lg:mb-8">
-                        <div className="flex items-center gap-3 group/title flex-1">
+                      <div className={`flex items-start justify-between ${isGridView ? 'mb-2 lg:mb-3' : 'mb-4 lg:mb-6'}`}>
+                        <div className="flex items-center gap-3 group/title flex-1 overflow-hidden">
                           <input 
                             type="text"
                             value={goal.text}
                             onChange={(e) => updateGoalText(selectedEntry.id, goal.id, e.target.value)}
-                            className="text-xl lg:text-3xl font-black bg-transparent border-none outline-none focus:outline-none focus:ring-0 p-0 text-memos-text-main w-full placeholder:text-gray-200 transition-all focus:pl-1 whitespace-pre-wrap"
+                            className={`${isGridView ? 'text-sm lg:text-lg' : 'text-xl lg:text-3xl'} font-black bg-transparent border-none outline-none focus:outline-none focus:ring-0 p-0 text-memos-text-main w-full placeholder:text-gray-200 transition-all focus:pl-1 truncate`}
                             placeholder="输入标题..."
                           />
                         </div>
-                        <div className="flex items-center gap-1 opacity-100 lg:opacity-0 group-hover/card:opacity-100 transition-all ml-2 lg:ml-4 scale-90 lg:scale-100">
+                        <div className="flex items-center gap-1 opacity-100 lg:opacity-0 group-hover/card:opacity-100 transition-all ml-2 scale-75 lg:scale-90 origin-right">
                           <button 
                             onClick={() => setEditingGoalId(editingGoalId === goal.id ? null : goal.id)}
-                            className={`p-2 rounded-lg transition-colors ${editingGoalId === goal.id ? 'bg-memos-accent text-white' : 'hover:bg-gray-100 text-gray-400'}`}
+                            className={`p-1.5 rounded-lg transition-colors ${editingGoalId === goal.id ? 'bg-memos-accent text-white' : 'hover:bg-gray-100 text-gray-400'}`}
                           >
-                            {editingGoalId === goal.id ? <Eye className="w-4 h-4" /> : <Edit3 className="w-4 h-4" />}
+                            {editingGoalId === goal.id ? <Eye className="w-3.5 h-3.5" /> : <Edit3 className="w-3.5 h-3.5" />}
                           </button>
                           <button 
                             onClick={() => deleteGoal(selectedEntry.id, goal.id)}
-                            className={`p-2 rounded-lg transition-all flex items-center gap-2 ${confirmDeleteGoalId === goal.id ? 'bg-rose-500 text-white px-3' : 'hover:bg-rose-50 text-gray-300 hover:text-rose-500'}`}
+                            className={`p-1.5 rounded-lg transition-all flex items-center gap-2 ${confirmDeleteGoalId === goal.id ? 'bg-rose-500 text-white px-2' : 'hover:bg-rose-50 text-gray-300 hover:text-rose-500'}`}
                           >
-                            <Trash2 className="w-4 h-4" />
-                            {confirmDeleteGoalId === goal.id && <span className="text-[10px] font-bold">删除？</span>}
+                            <Trash2 className="w-3.5 h-3.5" />
+                            {confirmDeleteGoalId === goal.id && <span className="text-[9px] font-bold">删除？</span>}
                           </button>
                         </div>
                       </div>
 
-                      {/* Content Area */}
-                      {editingGoalId === goal.id ? (
-                        <div className="space-y-4">
-                          <div className="min-h-[400px] w-full bg-gray-50 border border-gray-100 rounded-xl p-4 lg:p-6">
-                            <TipTapEditor 
-                              content={goal.description || ''}
-                              onChange={(markdown) => updateGoalDescription(selectedEntry.id, goal.id, markdown)}
-                              placeholder="# 开启今日深度记录...\n\n支持粘贴图片、Markdown 语法、代码块等"
-                            />
-                          </div>
-                          
-                          <div className="flex items-center justify-between gap-4">
-                            <div className="flex items-center gap-4 flex-1">
-                              <span className="text-[10px] font-bold text-memos-text-dim uppercase">Progress: {goal.progress}%</span>
-                              <input 
-                                type="range" 
-                                min="0" 
-                                max="100" 
-                                value={goal.progress}
-                                onChange={(e) => updateGoalProgress(selectedEntry.id, goal.id, parseInt(e.target.value))}
-                                className="flex-1 h-1 bg-gray-100 rounded-full appearance-none cursor-pointer accent-memos-accent"
+                      {/* Content Area with Expand/Collapse */}
+                      <div className={`relative flex-1 transition-all duration-500 ease-in-out overflow-hidden ${
+                        editingGoalId === goal.id || expandedGoalIds.has(goal.id)
+                          ? 'max-h-[5000px]' 
+                          : isGridView ? 'max-h-[220px]' : 'max-h-[320px]'
+                      }`}>
+                        {editingGoalId === goal.id ? (
+                          <div className="space-y-4">
+                            <div className="min-h-[400px] w-full bg-gray-50 border border-gray-100 rounded-xl p-4">
+                              <TipTapEditor 
+                                content={goal.description || ''}
+                                onChange={(markdown) => updateGoalDescription(selectedEntry.id, goal.id, markdown)}
+                                placeholder="# 开启今日深度记录...\n\n支持粘贴图片、Markdown 语法、代码块等"
                               />
                             </div>
-                            <div className="flex items-center gap-2 text-[10px] text-memos-text-dim italic">
-                               <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                               <span>实时保存中...</span>
+                            
+                            <div className="flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-4 flex-1">
+                                <span className="text-[10px] font-bold text-memos-text-dim uppercase">Progress: {goal.progress}%</span>
+                                <input 
+                                  type="range" 
+                                  min="0" 
+                                  max="100" 
+                                  value={goal.progress}
+                                  onChange={(e) => updateGoalProgress(selectedEntry.id, goal.id, parseInt(e.target.value))}
+                                  className="flex-1 h-1 bg-gray-100 rounded-full appearance-none cursor-pointer accent-memos-accent"
+                                />
+                              </div>
+                              <div className="flex items-center gap-2 text-[10px] text-memos-text-dim italic">
+                                 <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                 <span>实时保存中...</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ) : (
-                        <div 
-                          className="prose prose-sm md:prose-base max-w-none prose-stone
-                            prose-h1:text-3xl prose-h1:font-black prose-h1:pb-4 prose-h1:border-b prose-h1:border-gray-100 prose-h1:mb-8 prose-h1:mt-4
-                            prose-h2:text-2xl prose-h2:font-extrabold prose-h2:border-l-4 prose-h2:border-memos-accent prose-h2:pl-5 prose-h2:mt-12 prose-h2:mb-6
-                            prose-h3:text-xl prose-h3:font-bold prose-h3:text-gray-800 prose-h3:mt-10 prose-h3:mb-4
-                            prose-h4:text-lg prose-h4:font-bold prose-h4:text-gray-700 prose-h4:mt-8
-                            prose-h5:text-base prose-h5:font-bold prose-h5:text-gray-600
-                            prose-h6:text-sm prose-h6:font-bold prose-h6:text-gray-500 prose-h6:italic
-                            prose-p:text-memos-text-main/85 prose-p:leading-relaxed prose-p:mb-5
-                            prose-ul:list-disc prose-ul:pl-6 prose-ol:list-decimal prose-ol:pl-6
-                            prose-li:text-memos-text-main/80 prose-li:my-1.5
-                            prose-blockquote:border-l-4 prose-blockquote:border-gray-200 prose-blockquote:italic prose-blockquote:text-gray-500 prose-blockquote:bg-gray-50/50 prose-blockquote:py-1 prose-blockquote:px-4
-                            prose-code:text-memos-accent prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:before:content-none prose-code:after:content-none
-                            prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-pre:rounded-xl prose-pre:p-6 prose-pre:shadow-sm
-                            prose-strong:text-memos-accent prose-img:rounded-2xl prose-img:shadow-sm min-h-[120px] cursor-text" 
-                          onClick={(e) => {
-                            const target = e.target as HTMLElement;
-                            if (target.tagName === 'IMG') {
-                              setZoomedImage((target as HTMLImageElement).src);
-                            } else {
-                              setEditingGoalId(goal.id);
-                            }
-                          }}
-                          dangerouslySetInnerHTML={{ 
-                            __html: goal.description 
-                              ? md.render(goal.description.replace(/!\[image\]\[(\d+)\]/g, (_, idx) => {
-                                  const img = goal.images?.[parseInt(idx)];
-                                  return img ? `![image](${img})` : `![image](invalid)`;
-                                })) 
-                              : '<div class="py-20 text-center border border-dashed border-gray-100 rounded-3xl group-hover/card:border-memos-accent/20 transition-all"><span class="text-gray-300 italic text-sm">开始您的深度记录，支持完整 Markdown 语法...</span></div>'
-                          }}
-                        />
-                      )}
+                        ) : (
+                          <div 
+                            className={`prose prose-stone max-w-none
+                              ${isGridView ? 'prose-xs sm:prose-sm' : 'prose-sm md:prose-base leading-relaxed'}
+                              prose-h1:text-2xl prose-h1:font-black prose-h1:pb-2 prose-h1:mb-4
+                              prose-h2:text-xl prose-h2:font-extrabold prose-h2:mt-6 prose-h2:mb-3
+                              prose-h3:text-lg prose-h3:font-bold prose-h3:mt-4 prose-h3:mb-2
+                              prose-p:text-memos-text-main/85 prose-p:mb-3
+                              prose-ul:pl-4 prose-ol:pl-4
+                              prose-li:my-1
+                              prose-blockquote:border-l-4 prose-blockquote:py-0.5 prose-blockquote:px-3
+                              prose-pre:p-4 prose-pre:text-xs
+                              prose-strong:text-memos-accent prose-img:rounded-xl prose-img:shadow-sm min-h-[60px] cursor-text`}
+                            onClick={(e) => {
+                              const target = e.target as HTMLElement;
+                              if (target.tagName === 'IMG') {
+                                setZoomedImage((target as HTMLImageElement).src);
+                              } else {
+                                setEditingGoalId(goal.id);
+                              }
+                            }}
+                            dangerouslySetInnerHTML={{ 
+                              __html: goal.description 
+                                ? md.render(goal.description.replace(/!\[image\]\[(\d+)\]/g, (_, idx) => {
+                                    const img = goal.images?.[parseInt(idx)];
+                                    return img ? `![image](${img})` : `![image](invalid)`;
+                                  })) 
+                                : isGridView ? '<div class="py-10 text-center border border-dashed border-gray-100 rounded-2xl"><span class="text-gray-300 italic text-[10px]">点击进行记录...</span></div>' : '<div class="py-20 text-center border border-dashed border-gray-100 rounded-3xl group-hover/card:border-memos-accent/20 transition-all"><span class="text-gray-300 italic text-sm">开始您的深度记录，支持完整 Markdown 语法...</span></div>'
+                            }}
+                          />
+                        )}
 
-                      {/* Image Document Section */}
-                      {goal.images && goal.images.length > 0 && (
-                        <div className="mt-8 lg:mt-12 space-y-4 lg:space-y-6">
-                          {goal.images.map((img, idx) => (
-                            <div key={idx} className="relative group/img rounded-xl lg:rounded-2xl overflow-hidden bg-gray-50 ring-1 ring-gray-100 cursor-zoom-in">
-                              <img 
-                                src={img} 
-                                alt="" 
-                                className="w-full h-auto max-h-[1000px] object-contain mx-auto" 
-                                onClick={() => setZoomedImage(img)}
-                              />
-                              <button 
-                                onClick={() => removeGoalImage(selectedEntry.id, goal.id, idx)}
-                                className="absolute top-2 lg:top-4 right-2 lg:right-4 p-1.5 lg:p-2 bg-black/40 text-white rounded-full lg:opacity-0 group-hover/img:opacity-100 transition-all backdrop-blur-md hover:bg-rose-500"
-                              >
-                                <X className="w-3 h-3 lg:w-4 h-4" />
-                              </button>
-                            </div>
-                          ))}
+                        {/* Image Document Section */}
+                        {goal.images && goal.images.length > 0 && (
+                          <div className={`${isGridView ? 'mt-4 grid grid-cols-2 gap-2' : 'mt-8 lg:mt-12 space-y-4 lg:space-y-6'}`}>
+                            {goal.images.map((img, idx) => (
+                              <div key={idx} className="relative group/img rounded-xl overflow-hidden bg-gray-50 ring-1 ring-gray-100 cursor-zoom-in">
+                                <img 
+                                  src={img} 
+                                  alt="" 
+                                  className={`w-full h-auto ${isGridView ? 'aspect-video object-cover' : 'max-h-[1000px] object-contain'} mx-auto`}
+                                  onClick={() => setZoomedImage(img)}
+                                />
+                                <button 
+                                  onClick={() => removeGoalImage(selectedEntry.id, goal.id, idx)}
+                                  className="absolute top-1 right-1 p-1 bg-black/40 text-white rounded-full lg:opacity-0 group-hover/img:opacity-100 transition-all backdrop-blur-md hover:bg-rose-500 scale-75"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Truncation Overlay */}
+                        {!expandedGoalIds.has(goal.id) && editingGoalId !== goal.id && ((goal.description?.length || 0) > 100 || (goal.images?.length || 0) > 0) && (
+                          <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white via-white/80 to-transparent z-10 pointer-events-none" />
+                        )}
+                      </div>
+
+                      {/* Expand / Collapse Button */}
+                      {editingGoalId !== goal.id && ((goal.description?.length || 0) > 100 || (goal.images?.length || 0) > 0) && (
+                        <div className="flex justify-center mt-auto py-1 relative z-20">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleGoalExpand(goal.id);
+                            }}
+                            className="flex items-center gap-2 px-3 py-1 bg-gray-50 hover:bg-gray-100 text-memos-text-dim text-[8px] lg:text-[10px] font-bold rounded-full transition-all border border-gray-100"
+                          >
+                            {expandedGoalIds.has(goal.id) ? (
+                              <>
+                                <span>收起</span>
+                                <ChevronUp className="w-2.5 h-2.5" />
+                              </>
+                            ) : (
+                              <>
+                                <span>展开</span>
+                                <ChevronDown className="w-2.5 h-2.5" />
+                              </>
+                            )}
+                          </button>
                         </div>
                       )}
                       
-                      <div className="mt-8 lg:mt-10 pt-4 lg:pt-6 border-t border-gray-50 flex items-center justify-between text-[8px] lg:text-[10px] text-gray-200 uppercase font-black tracking-widest">
+                      <div className={`mt-3 pt-3 border-t border-gray-50 flex items-center justify-between text-[8px] text-gray-200 uppercase font-black tracking-widest ${isGridView ? 'opacity-50' : ''}`}>
                         <span>Memo System v2.0</span>
-                        <div className="flex items-center gap-1 lg:gap-2">
-                          <ImageIcon className="w-2.5 h-2.5 lg:w-3 h-3" />
-                          <span>PASTE IMAGE TO DOC</span>
+                        <div className="flex items-center gap-1">
+                          <ImageIcon className="w-2.5 h-2.5" />
+                          <span>DOCUMENT</span>
                         </div>
                       </div>
                     </div>
@@ -926,5 +1221,13 @@ export default function App() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }

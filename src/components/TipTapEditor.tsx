@@ -25,12 +25,6 @@ export const TipTapEditor = ({ content, onChange, placeholder }: Props) => {
       Placeholder.configure({
         placeholder: placeholder || '开始记录...',
       }),
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          class: 'text-memos-accent underline underline-offset-4'
-        }
-      }),
       Markdown.configure({
         html: true,
         tightLists: true,
@@ -42,9 +36,20 @@ export const TipTapEditor = ({ content, onChange, placeholder }: Props) => {
     ],
     content: content,
     onUpdate: ({ editor }) => {
-      // @ts-ignore - markdown extension adds this method
-      const markdown = editor.storage.markdown.getMarkdown();
-      onChange(markdown);
+      try {
+        // @ts-ignore - markdown extension adds this method
+        const markdownStorage = editor.storage.markdown;
+        if (markdownStorage && typeof markdownStorage.getMarkdown === 'function') {
+          const markdown = markdownStorage.getMarkdown();
+          // Only trigger onChange if the content is actually different from the last set content
+          // to avoid infinite loops or unnecessary parent re-renders
+          if (markdown !== content) {
+            onChange(markdown);
+          }
+        }
+      } catch (e) {
+        console.error("TipTap update error:", e);
+      }
     },
     editorProps: {
       attributes: {
@@ -86,11 +91,19 @@ export const TipTapEditor = ({ content, onChange, placeholder }: Props) => {
   // Keep editor content in sync with external changes (e.g. switching daily entries)
   useEffect(() => {
     if (editor && content !== undefined) {
-      // Only update if difference is significant to avoid cursor jumps
-      // @ts-ignore
-      const currentMarkdown = editor.storage.markdown.getMarkdown();
-      if (content !== currentMarkdown) {
-        editor.commands.setContent(content, { emitUpdate: false });
+      try {
+        // @ts-ignore
+        const markdownStorage = editor.storage.markdown;
+        if (markdownStorage && typeof markdownStorage.getMarkdown === 'function') {
+          const currentMarkdown = markdownStorage.getMarkdown();
+          // Use a basic normalization (trimming) for comparison to avoid small whitespace differences
+          // from triggering unnecessary document re-sets.
+          if (content.trim() !== currentMarkdown.trim()) {
+            editor.commands.setContent(content, { emitUpdate: false });
+          }
+        }
+      } catch (e) {
+        console.error("TipTap content sync error:", e);
       }
     }
   }, [content, editor]);
